@@ -25,12 +25,13 @@ import {
   X,
 } from "lucide-react";
 import {
-  buildRegistrationPayload,
-  createRegistration,
+  submitRegistration,
   formatCurrency,
   formatEventDate,
   getCurrentEvent,
+  getRegistrationsByEvent,
 } from "@/Lib/api/golfDayApi";
+
 const defaultPackageOptions = [
   {
     id: "premium-hole",
@@ -85,8 +86,11 @@ const navItems = [
 
 const createPlayer = (halfwayOptions = [], dinnerOptions = []) => ({
   id: crypto.randomUUID(),
-  name: "",
+  firstName: "",
+  lastName: "",
   email: "",
+  phone: "",
+  handicap: "",
   meal: halfwayOptions[0] || "Chicken",
   dinnerMeal: dinnerOptions[0] || "Chicken",
   dietary: "",
@@ -199,6 +203,92 @@ function Select({ label, children, className = "", ...props }) {
   );
 }
 
+function PlayerModal({ registration, onClose }) {
+  if (!registration) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="mx-4 w-full max-w-lg rounded-3xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-slate-200 px-6 py-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">{registration.teamName}</h3>
+              <p className="mt-1 text-sm text-slate-500">{registration.companyName}</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-2xl border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="max-h-[60vh] overflow-y-auto px-6 py-5">
+          <p className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Players ({registration.players?.length || 0})
+          </p>
+
+          {(!registration.players || registration.players.length === 0) ? (
+            <p className="text-sm text-slate-500">No player details available.</p>
+          ) : (
+            <div className="space-y-3">
+              {registration.players.map((player, index) => (
+                <div key={player.id || index} className="rounded-2xl bg-slate-50 p-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="font-semibold text-slate-900">
+                        {player.firstName} {player.lastName}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-500">{player.email}</p>
+                      {player.phone && (
+                        <p className="text-sm text-slate-500">{player.phone}</p>
+                      )}
+                    </div>
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-semibold text-slate-700">
+                      #{index + 1}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {player.handicap != null && (
+                      <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-600 shadow-sm">
+                        HC: {player.handicap}
+                      </span>
+                    )}
+                    <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-600 shadow-sm">
+                      🍽 {player.halfwayHouseMealOption}
+                    </span>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-600 shadow-sm">
+                      🥂 {player.dinnerMealOption}
+                    </span>
+                    {player.dietaryRequirements && (
+                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs text-amber-700 shadow-sm">
+                        ⚠ {player.dietaryRequirements}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-200 px-6 py-4">
+          <button
+            onClick={onClose}
+            className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:translate-y-[-1px]"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TfgGolfDayFrontend() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [event, setEvent] = useState(null);
@@ -209,6 +299,9 @@ export default function TfgGolfDayFrontend() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [registrations, setRegistrations] = useState([]);
+  const [loadingRegistrations, setLoadingRegistrations] = useState(false);
+  const [selectedRegistration, setSelectedRegistration] = useState(null);
 
   useEffect(() => {
     async function loadEvent() {
@@ -218,6 +311,18 @@ export default function TfgGolfDayFrontend() {
         const data = await getCurrentEvent();
         setEvent(data);
         setForm(createInitialForm(data));
+
+        if (data?.id) {
+          setLoadingRegistrations(true);
+          try {
+            const regs = await getRegistrationsByEvent(data.id);
+            setRegistrations(regs || []);
+          } catch (regErr) {
+            console.warn("Could not load registrations:", regErr.message);
+          } finally {
+            setLoadingRegistrations(false);
+          }
+        }
       } catch (err) {
         setError(err.message || "Failed to load event.");
       } finally {
@@ -247,15 +352,16 @@ export default function TfgGolfDayFrontend() {
   const halfwayHouseOptions = event?.catering?.halfwayHouseOptions || ["Chicken", "Beef", "Vegetarian", "Halal"];
   const dinnerOptions = event?.catering?.dinnerOptions || ["Chicken", "Beef", "Vegetarian"];
 
+  const totalRegisteredTeams = registrations.length;
+  const totalPlayers = registrations.reduce((sum, reg) => sum + (reg.players?.length || 0), 0);
+  const confirmedCount = registrations.filter((r) => r.status === "Confirmed").length;
+  const pendingCount = registrations.filter((r) => r.status === "Pending").length;
+
   const stats = [
-    { label: "Teams Registered", value: form.teams.length + 23, icon: Users },
-    { label: "Sponsors Confirmed", value: packageOptions.length, icon: Trophy },
-    { label: "Prizes Donated", value: form.participation.donatePrizes ? 1 : 0, icon: Gift },
-    {
-      label: "Funds Raised",
-      value: form.donation.charityAmount ? formatCurrency(form.donation.charityAmount) : "R0",
-      icon: HeartHandshake,
-    },
+    { label: "Teams Registered", value: totalRegisteredTeams, icon: Users },
+    { label: "Total Players", value: totalPlayers, icon: Trophy },
+    { label: "Confirmed", value: confirmedCount, icon: CheckCircle2 },
+    { label: "Pending", value: pendingCount, icon: Clock3 },
   ];
 
   const generatedTeeTimes = useMemo(() => {
@@ -359,11 +465,23 @@ export default function TfgGolfDayFrontend() {
       setError("");
       setSuccessMessage("");
 
-      const payload = buildRegistrationPayload(form, event, generatedTeeTimes);
-      await createRegistration(payload);
+      const results = await submitRegistration(form, event);
 
       setSubmitted(true);
-      setSuccessMessage("Registration submitted successfully.");
+      setSuccessMessage(
+        results.length === 1
+          ? "Registration submitted successfully."
+          : `${results.length} team registrations submitted successfully.`
+      );
+
+      // Refresh registrations from API so dashboard updates immediately
+      if (event?.id) {
+        try {
+          const regs = await getRegistrationsByEvent(event.id);
+          setRegistrations(regs || []);
+        } catch {}
+      }
+
       document.getElementById("confirmation")?.scrollIntoView({ behavior: "smooth" });
     } catch (err) {
       setError(err.message || "Failed to submit registration.");
@@ -372,13 +490,20 @@ export default function TfgGolfDayFrontend() {
     }
   };
 
-  const adminRegistrations = generatedTeeTimes.map((slot, index) => ({
-    company: form.company.companyName || "Acme Sponsors",
-    contact: form.company.contactPerson || "Jordan Peters",
-    team: slot.teamName,
-    slot: `${slot.time} • ${slot.hole}`,
-    status: index % 2 === 0 ? "Confirmed" : "Pending Invoice",
-  }));
+  const adminRegistrations = useMemo(() => {
+    if (!registrations.length) {
+      return [];
+    }
+
+    return registrations.map((reg) => ({
+      id: reg.id,
+      company: reg.companyName,
+      contact: reg.contactPersonName,
+      team: reg.teamName,
+      players: reg.players?.length || 0,
+      status: reg.status,
+    }));
+  }, [registrations]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -884,45 +1009,77 @@ export default function TfgGolfDayFrontend() {
                       </div>
 
                       <div className="mt-5 space-y-4">
-                        {team.players.map((player, playerIndex) => (
-                          <div key={player.id} className="rounded-3xl border border-white bg-white p-4 shadow-sm">
-                            <p className="mb-4 text-sm font-semibold text-slate-900">
-                              Player {playerIndex + 1}
-                            </p>
-                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                              <Input
-                                label="Full name"
-                                value={player.name}
-                                onChange={(e) => updatePlayer(team.id, player.id, "name", e.target.value)}
-                                placeholder="Player name"
-                              />
-                              <Input
-                                label="Email"
-                                type="email"
-                                value={player.email}
-                                onChange={(e) => updatePlayer(team.id, player.id, "email", e.target.value)}
-                                placeholder="player@email.com"
-                              />
-                              <Select
-                                label="Meal choice"
-                                value={player.meal}
-                                onChange={(e) => updatePlayer(team.id, player.id, "meal", e.target.value)}
-                              >
-                                {halfwayHouseOptions.map((option) => (
-                                  <option key={option} value={option}>
-                                    {option}
-                                  </option>
-                                ))}
-                              </Select>
-                              <Input
-                                label="Dietary requirements"
-                                value={player.dietary}
-                                onChange={(e) => updatePlayer(team.id, player.id, "dietary", e.target.value)}
-                                placeholder="Optional"
-                              />
-                            </div>
-                          </div>
-                        ))}
+                      {team.players.map((player, playerIndex) => (
+  <div key={player.id} className="rounded-3xl border border-white bg-white p-4 shadow-sm">
+    <p className="mb-4 text-sm font-semibold text-slate-900">
+      Player {playerIndex + 1}
+    </p>
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <Input
+        label="First name"
+        required
+        value={player.firstName}
+        onChange={(e) => updatePlayer(team.id, player.id, "firstName", e.target.value)}
+        placeholder="First name"
+      />
+      <Input
+        label="Last name"
+        required
+        value={player.lastName}
+        onChange={(e) => updatePlayer(team.id, player.id, "lastName", e.target.value)}
+        placeholder="Last name"
+      />
+      <Input
+        label="Email"
+        required
+        type="email"
+        value={player.email}
+        onChange={(e) => updatePlayer(team.id, player.id, "email", e.target.value)}
+        placeholder="player@email.com"
+      />
+      <Input
+        label="Phone"
+        required
+        value={player.phone}
+        onChange={(e) => updatePlayer(team.id, player.id, "phone", e.target.value)}
+        placeholder="012 345 6789"
+      />
+      <Input
+        label="Handicap"
+        type="number"
+        min="0"
+        max="54"
+        value={player.handicap}
+        onChange={(e) => updatePlayer(team.id, player.id, "handicap", e.target.value)}
+        placeholder="Optional"
+      />
+      <Select
+        label="Halfway house meal"
+        value={player.meal}
+        onChange={(e) => updatePlayer(team.id, player.id, "meal", e.target.value)}
+      >
+        {halfwayHouseOptions.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </Select>
+      <Select
+        label="Dinner meal"
+        value={player.dinnerMeal}
+        onChange={(e) => updatePlayer(team.id, player.id, "dinnerMeal", e.target.value)}
+      >
+        {dinnerOptions.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </Select>
+      <Input
+        label="Dietary requirements"
+        value={player.dietary}
+        onChange={(e) => updatePlayer(team.id, player.id, "dietary", e.target.value)}
+        placeholder="Optional"
+      />
+    </div>
+  </div>
+))}
                       </div>
                     </div>
                   ))}
@@ -1183,21 +1340,52 @@ export default function TfgGolfDayFrontend() {
                     <span>Company</span>
                     <span>Contact</span>
                     <span>Team</span>
-                    <span>Slot</span>
+                    <span>Players</span>
                     <span>Status</span>
                   </div>
-                  {adminRegistrations.map((row, index) => (
-                    <div
-                      key={`${row.company}-${row.team}-${index}`}
-                      className="grid grid-cols-5 border-b border-slate-100 px-6 py-4 text-sm text-slate-600"
-                    >
-                      <span>{row.company}</span>
-                      <span>{row.contact}</span>
-                      <span>{row.team}</span>
-                      <span>{row.slot}</span>
-                      <span>{row.status}</span>
+
+                  {loadingRegistrations ? (
+                    <div className="px-6 py-8 text-center text-sm text-slate-500">
+                      Loading registrations...
                     </div>
-                  ))}
+                  ) : adminRegistrations.length === 0 ? (
+                    <div className="px-6 py-8 text-center text-sm text-slate-500">
+                      No registrations yet. Be the first to register!
+                    </div>
+                  ) : (
+                    adminRegistrations.map((row) => (
+                      <div
+                        key={row.id}
+                        className="grid grid-cols-5 border-b border-slate-100 px-6 py-4 text-sm text-slate-600"
+                      >
+                        <span>{row.company}</span>
+                        <span>{row.contact}</span>
+                        <span>{row.team}</span>
+                        <button
+                            onClick={() => setSelectedRegistration(
+                              registrations.find((r) => r.id === row.id)
+                            )}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
+                          >
+                            <Users className="h-3 w-3" />
+                            {row.players} players
+                          </button>
+                        <span>
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                              row.status === "Confirmed"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : row.status === "Cancelled"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-amber-100 text-amber-800"
+                            }`}
+                          >
+                            {row.status}
+                          </span>
+                        </span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             ) : (
@@ -1240,6 +1428,12 @@ export default function TfgGolfDayFrontend() {
           </div>
         </div>
       </footer>
-    </div>
+      
+          {/* ← Player modal goes HERE — after footer, before root closing div */}
+          <PlayerModal
+        registration={selectedRegistration}
+        onClose={() => setSelectedRegistration(null)}
+      />
+    </div>   
   );
 }
